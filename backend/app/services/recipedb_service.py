@@ -53,10 +53,11 @@ class RecipeDBService:
         self.base_url = settings.RECIPEDB_BASE_URL
         self.timeout = settings.API_TIMEOUT
         self.api_key = settings.COSYLAB_API_KEY
+        self.use_bearer = getattr(settings, "RECIPEDB_USE_BEARER_AUTH", False)
         self.max_retries = 3
         self.retry_delay = 1  # seconds
 
-        logger.info(f"RecipeDB service initialized with base URL: {self.base_url}")
+        logger.info(f"RecipeDB service initialized with base URL: {self.base_url} (Bearer auth: {self.use_bearer})")
         if self.api_key:
             logger.info(f"CosyLab API key is configured (length: {len(self.api_key)} chars)")
         else:
@@ -94,7 +95,10 @@ class RecipeDBService:
             
             headers = {"Accept": "application/json"}
             if self.api_key:
-                headers["x-api-key"] = self.api_key
+                if self.use_bearer:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
+                else:
+                    headers["x-api-key"] = self.api_key
             else:
                 logger.warning("No API key configured! Request may fail if API requires authentication.")
 
@@ -134,7 +138,19 @@ class RecipeDBService:
                     logger.error(f"Error response body: {error_body}")
                 except:
                     pass
-            # Don't retry on 4xx errors (client errors)
+            # 429 Rate Limit: retry with longer delay (respect Retry-After if present)
+            if status_code == 429:
+                retry_after = None
+                if e.response and "Retry-After" in e.response.headers:
+                    try:
+                        retry_after = int(e.response.headers["Retry-After"])
+                    except (ValueError, TypeError):
+                        pass
+                wait = retry_after if retry_after else (10 + self.retry_delay * (2 ** retry_count))
+                logger.warning(f"Rate limited (429). Retrying after {wait}s")
+                time.sleep(wait)
+                return self._handle_retry(endpoint, params, retry_count, "rate_limit")
+            # Don't retry on other 4xx errors (client errors)
             if status_code and 400 <= status_code < 500:
                 logger.error(f"Client error (4xx) - likely API key issue or invalid request. Not retrying.")
                 return None
@@ -148,6 +164,41 @@ class RecipeDBService:
             logger.error(f"Failed to parse JSON response from {url}: {str(e)}")
             return None
     
+    def _recipesinfo_request(
+        self,
+        params: Optional[Dict] = None,
+        retry_count: int = 0
+    ) -> Optional[List[Dict]]:
+        """
+        Call org API recipesinfo endpoint. Returns payload.data list or None.
+        """
+        p = dict(params) if params else {}
+        p.setdefault("page", 1)
+        p.setdefault("limit", 50)
+        response = self._make_request("recipesinfo", p, retry_count)
+        if not response or not isinstance(response, dict):
+            return None
+        payload = response.get("payload") or response
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return data if isinstance(data, list) else []
+
+    def _org_recipe_to_standard(self, r: Dict) -> Dict:
+        """Convert org API recipe format to standard app format."""
+        rid = r.get("Recipe_id") or r.get("_id") or r.get("id") or ""
+        return {
+            "id": str(rid),
+            "name": r.get("Recipe_title") or r.get("name") or r.get("title") or "",
+            "ingredients": r.get("ingredients") or [],
+            "cuisine": r.get("cuisine") or r.get("region") or "",
+            "diet_type": r.get("diet_type") or r.get("diet") or "",
+            "instructions": r.get("instructions") or "",
+            "prep_time": int(r.get("prep_time", 0) or 0),
+            "cook_time": int(r.get("cook_time", 0) or 0),
+            "servings": int(r.get("servings", 0) or 0),
+            "Calories": r.get("Calories"),
+            "_raw": r,
+        }
+
     def _handle_retry(
         self,
         endpoint: str,
@@ -206,6 +257,20 @@ class RecipeDBService:
         """
         logger.info(f"Fetching recipe by name: {recipe_name}")
         
+        if self.use_bearer:
+            # Org API: recipesinfo - fetch and filter by Recipe_title
+            data = self._recipesinfo_request({"page": 1, "limit": 200})
+            if data:
+                q = recipe_name.lower()
+                for r in data:
+                    t = (r.get("Recipe_title") or r.get("name") or "").lower()
+                    if q in t or t in q:
+                        out = self._org_recipe_to_standard(r)
+                        logger.info(f"Found recipe: {out.get('name')} (ID: {out.get('id')})")
+                        return out
+            logger.warning(f"No recipe found for name: {recipe_name}")
+            return None
+
         params = {"title": recipe_name}
         response = self._make_request("recipe_by_title", params)
         
@@ -255,13 +320,29 @@ class RecipeDBService:
         """
         logger.info(f"Fetching nutrition info for recipe ID: {recipe_id}")
         
+        if self.use_bearer:
+            # Org API: Calories comes from recipe in recipesinfo
+            data = self._recipesinfo_request({"page": 1, "limit": 200})
+            if data:
+                for r in data:
+                    rid = str(r.get("Recipe_id") or r.get("_id") or r.get("id") or "")
+                    if rid == str(recipe_id):
+                        cal_str = r.get("Calories") or r.get("calories") or "0"
+                        try:
+                            cal = float(str(cal_str).replace(",", ""))
+                        except (TypeError, ValueError):
+                            cal = 0.0
+                        nutrition_data = self._parse_nutrition_response(r)
+                        nutrition_data["calories"] = cal
+                        return nutrition_data
+            raise ValueError(f"Failed to fetch nutrition info for recipe ID: {recipe_id}")
+
         params = {"id": recipe_id}
         response = self._make_request("recipe_nutrition_info", params)
         
         if not response:
             raise ValueError(f"Failed to fetch nutrition info for recipe ID: {recipe_id}")
         
-        # Parse and standardize nutrition data
         nutrition_data = self._parse_nutrition_response(response)
         
         logger.debug(f"Nutrition data retrieved: {nutrition_data.get('calories', 0)} calories")
@@ -351,6 +432,10 @@ class RecipeDBService:
         """
         logger.info(f"Fetching micronutrient info for recipe ID: {recipe_id}")
         
+        if self.use_bearer:
+            # Org API does not expose micronutrients; return empty structure
+            return self._parse_micro_nutrition_response({})
+
         params = {"id": recipe_id}
         response = self._make_request("recipe_micro_nutrition_info", params)
         
@@ -431,19 +516,30 @@ class RecipeDBService:
         """
         logger.info(f"Searching recipes by calories: {min_cal}-{max_cal} (limit: {limit})")
         
-        params = {
-            "min_calories": min_cal,
-            "max_calories": max_cal,
-            "limit": limit
-        }
-        
+        if self.use_bearer:
+            data = self._recipesinfo_request({"page": 1, "limit": limit * 2})
+            if not data:
+                return []
+            out = []
+            for r in data:
+                try:
+                    c = float(str(r.get("Calories") or 0).replace(",", ""))
+                except (TypeError, ValueError):
+                    c = 0
+                if min_cal <= c <= max_cal:
+                    out.append(self._org_recipe_to_standard(r))
+                    if len(out) >= limit:
+                        break
+            logger.info(f"Found {len(out)} recipes in calorie range")
+            return out
+
+        params = {"min_calories": min_cal, "max_calories": max_cal, "limit": limit}
         response = self._make_request("recipe_by_calories", params)
         
         if not response:
             logger.warning(f"No recipes found in calorie range: {min_cal}-{max_cal}")
             return []
         
-        # Ensure response is a list
         recipes = response if isinstance(response, list) else [response]
         
         logger.info(f"Found {len(recipes)} recipes in calorie range")
@@ -472,11 +568,13 @@ class RecipeDBService:
         """
         logger.info(f"Searching recipes by protein: {min_protein}g-{max_protein}g")
         
-        params = {
-            "min_protein": min_protein,
-            "max_protein": max_protein
-        }
-        
+        if self.use_bearer:
+            data = self._recipesinfo_request({"page": 1, "limit": 50})
+            recipes = [self._org_recipe_to_standard(r) for r in (data or [])]
+            logger.info(f"Found {len(recipes)} recipes (org API: no protein filter)")
+            return recipes
+
+        params = {"min_protein": min_protein, "max_protein": max_protein}
         response = self._make_request("recipe_by_protein_range", params)
         
         if not response:
@@ -506,6 +604,12 @@ class RecipeDBService:
         """
         logger.info(f"Searching recipes by cuisine: {cuisine}")
         
+        if self.use_bearer:
+            data = self._recipesinfo_request({"page": 1, "limit": 50})
+            recipes = [self._org_recipe_to_standard(r) for r in (data or [])]
+            logger.info(f"Found {len(recipes)} recipes (org API: no cuisine filter)")
+            return recipes
+
         params = {"cuisine": cuisine}
         response = self._make_request("recipe_by_cuisine", params)
         
@@ -537,6 +641,12 @@ class RecipeDBService:
         """
         logger.info(f"Searching recipes by diet type: {diet_type}")
         
+        if self.use_bearer:
+            data = self._recipesinfo_request({"page": 1, "limit": 50})
+            recipes = [self._org_recipe_to_standard(r) for r in (data or [])]
+            logger.info(f"Found {len(recipes)} recipes (org API: no diet filter)")
+            return recipes
+
         params = {"diet": diet_type}
         response = self._make_request("recipe_by_diet", params)
         
@@ -580,6 +690,18 @@ class RecipeDBService:
         """
         logger.info(f"Fetching recipe by ID: {recipe_id}")
         
+        if self.use_bearer:
+            data = self._recipesinfo_request({"page": 1, "limit": 200})
+            if data:
+                for r in data:
+                    rid = str(r.get("Recipe_id") or r.get("_id") or r.get("id") or "")
+                    if rid == str(recipe_id):
+                        out = self._org_recipe_to_standard(r)
+                        logger.info(f"Retrieved recipe: {out.get('name')} (ID: {out.get('id')})")
+                        return out
+            logger.warning(f"No recipe found for ID: {recipe_id}")
+            return None
+
         params = {"id": recipe_id}
         response = self._make_request("recipe_by_id", params)
         
@@ -587,7 +709,6 @@ class RecipeDBService:
             logger.warning(f"No recipe found for ID: {recipe_id}")
             return None
         
-        # Handle nested response if present
         recipe = response.get("recipe", response)
         
         logger.info(f"Retrieved recipe: {recipe.get('name', 'Unknown')}")
@@ -604,7 +725,9 @@ class RecipeDBService:
             bool: True if API is available, False otherwise
         """
         try:
-            # Try a simple request to check availability
+            if self.use_bearer:
+                data = self._recipesinfo_request({"page": 1, "limit": 1})
+                return data is not None
             response = self._make_request("recipe_by_id", {"id": "1"})
             return response is not None
         except Exception as e:
@@ -629,6 +752,12 @@ class RecipeDBService:
         """
         logger.info(f"Searching recipes by utensils: {utensils}")
         
+        if self.use_bearer:
+            data = self._recipesinfo_request({"page": 1, "limit": 50})
+            recipes = [self._org_recipe_to_standard(r) for r in (data or [])]
+            logger.info(f"Found {len(recipes)} recipes (org API: no utensils filter)")
+            return recipes
+
         params = {"utensils": utensils}
         response = self._make_request("recipe_by_utensils", params)
         
@@ -659,6 +788,12 @@ class RecipeDBService:
         """
         logger.info(f"Searching recipes by method: {method}")
         
+        if self.use_bearer:
+            data = self._recipesinfo_request({"page": 1, "limit": 50})
+            recipes = [self._org_recipe_to_standard(r) for r in (data or [])]
+            logger.info(f"Found {len(recipes)} recipes (org API: no method filter)")
+            return recipes
+
         params = {"method": method}
         response = self._make_request("recipe_by_recipes_method", params)
         
@@ -689,6 +824,12 @@ class RecipeDBService:
         """
         logger.info(f"Searching recipes by category: {category}")
         
+        if self.use_bearer:
+            data = self._recipesinfo_request({"page": 1, "limit": 50})
+            recipes = [self._org_recipe_to_standard(r) for r in (data or [])]
+            logger.info(f"Found {len(recipes)} recipes (org API: no category filter)")
+            return recipes
+
         params = {"category": category}
         response = self._make_request("recipe_by_category", params)
         

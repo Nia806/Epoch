@@ -40,7 +40,7 @@ class Settings(BaseModel):
     
     # API Configuration
     RECIPEDB_BASE_URL: str = Field(
-        default="https://cosylab.iiitd.edu.in/recipedb/search_recipedb",
+        default_factory=lambda: os.getenv("RECIPEDB_BASE_URL", "https://cosylab.iiitd.edu.in/recipedb/search_recipedb"),
         description="Base URL for RecipeDB API"
     )
     
@@ -53,6 +53,12 @@ class Settings(BaseModel):
     COSYLAB_API_KEY: Optional[str] = Field(
         default_factory=lambda: os.getenv("COSYLAB_API_KEY"),
         description="API key for RecipeDB and FlavorDB (cosylab.iiitd.edu.in)"
+    )
+
+    # RecipeDB org API uses Bearer token; public API uses x-api-key
+    RECIPEDB_USE_BEARER_AUTH: bool = Field(
+        default_factory=lambda: os.getenv("RECIPEDB_USE_BEARER_AUTH", "false").lower() in ("true", "1", "yes"),
+        description="Use Authorization: Bearer token (org API) instead of x-api-key"
     )
 
     # API Timeouts

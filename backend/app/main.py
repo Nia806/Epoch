@@ -1075,6 +1075,67 @@ async def recalculate_score(request: RecalculateRequest) -> RecalculateResponse:
         )
 
 
+@app.get("/debug/cosylab-test")
+async def cosylab_debug_test():
+    """
+    Debug endpoint to compare CosyLab API requests with Postman.
+    
+    Returns the exact URL, headers (key redacted), params, and raw response
+    from CosyLab RecipeDB. Use this to align the app with your working
+    Postman request.
+    
+    Compare:
+    1. URL structure (base URL + endpoint path)
+    2. Header name and format (x-api-key vs Authorization vs api_key query param)
+    3. Query parameter names (title vs recipe_title, etc.)
+    """
+    base_url = settings.RECIPEDB_BASE_URL
+    use_bearer = getattr(settings, "RECIPEDB_USE_BEARER_AUTH", False)
+    if use_bearer:
+        endpoint = "recipesinfo"
+        params = {"page": 1, "limit": 10}
+    else:
+        endpoint = "recipe_by_title"
+        params = {"title": "pasta"}
+    url = f"{base_url}/{endpoint}"
+    api_key = settings.COSYLAB_API_KEY or ""
+    headers = {"Accept": "application/json"}
+    if api_key:
+        if use_bearer:
+            headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            headers["x-api-key"] = api_key
+    
+    debug = {
+        "request": {
+            "method": "GET",
+            "url": url,
+            "params": params,
+            "headers": {k: ("***REDACTED***" if k.lower() in ("x-api-key", "authorization") else v) for k, v in headers.items()},
+            "api_key_loaded": bool(api_key),
+            "api_key_length": len(api_key),
+        },
+        "response": None,
+    }
+    
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        debug["response"] = {
+            "status_code": resp.status_code,
+            "reason": resp.reason,
+            "headers": dict(resp.headers),
+            "body_preview": resp.text[:1000] if resp.text else None,
+        }
+        try:
+            debug["response"]["body_json"] = resp.json()
+        except Exception:
+            pass
+    except requests.exceptions.RequestException as e:
+        debug["response"] = {"error": str(e), "error_type": type(e).__name__}
+    
+    return debug
+
+
 @app.get("/health")
 async def health_check():
     """
