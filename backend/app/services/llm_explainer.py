@@ -175,6 +175,7 @@ class LLMExplainer:
             return self._template_swap_explanation(swaps, original_score, projected_score)
         else:
             # Future: Call external LLM API
+            logger.info("🚨 [LLM] Using LLM API for swap explanation generation")
             return self._api_swap_explanation(swaps, original_score, projected_score)
     
     def _template_swap_explanation(
@@ -276,7 +277,7 @@ class LLMExplainer:
         NOTE: Not implemented in MVP. This is a placeholder for future
         integration with Claude, GPT, or other LLM services.
         """
-        logger.warning("LLM API not implemented - falling back to template")
+        logger.warning("[LLM FALLBACK] LLM API not implemented for health explanation - falling back to template")
         return self._template_health_explanation(score, rating, nutrition_data)
     
     def _api_swap_explanation(
@@ -290,7 +291,7 @@ class LLMExplainer:
         
         NOTE: Not implemented in MVP. Placeholder for future LLM integration.
         """
-        logger.warning("LLM API not implemented - falling back to template")
+        logger.warning("[LLM FALLBACK] LLM API not implemented for swap explanation - falling back to template")
         return self._template_swap_explanation(swaps, original_score, projected_score)
     
     def _api_analysis_summary(self, full_analysis: Dict) -> str:
@@ -299,7 +300,7 @@ class LLMExplainer:
         
         NOTE: Not implemented in MVP. Placeholder for future LLM integration.
         """
-        logger.warning("LLM API not implemented - falling back to template")
+        logger.warning("[LLM FALLBACK] LLM API not implemented for analysis summary - falling back to template")
         return self._template_analysis_summary(full_analysis)
 
     # ==================================================================
@@ -338,10 +339,11 @@ class LLMExplainer:
             )
             text = response.text.strip() if response and response.text else None
             if text:
-                logger.info("LLM craving insight generated successfully")
+                logger.info("🚨 [LLM] Craving insight generated via Gemini")
             return text
         except Exception as e:
             logger.warning(f"LLM craving insight failed: {e}")
+            logger.warning("[LLM FALLBACK] Gemini LLM failed to generate craving insight. Caller will use template fallback.")
             return None
 
     def generate_craving_pattern_insights(
@@ -374,6 +376,7 @@ class LLMExplainer:
                 contents=prompt,
             )
             if response and response.text:
+                logger.info("🚨 [LLM] Craving pattern insights generated via Gemini")
                 lines = [
                     line.strip().lstrip("•-0123456789. ")
                     for line in response.text.strip().split("\n")
@@ -383,4 +386,5 @@ class LLMExplainer:
             return None
         except Exception as e:
             logger.warning(f"LLM pattern insight failed: {e}")
+            logger.warning("[LLM FALLBACK] Gemini LLM failed to generate craving pattern insights. Returning None.")
             return None

@@ -156,7 +156,7 @@ class LLMSwapAgent:
 
         Returns an AgentSwapResult with substitutions, confidence, and metadata.
         """
-        logger.info(f"LLM swap agent starting for recipe: {recipe_name}")
+        logger.info(f"🚨 [LLM] Swap agent starting for recipe: {recipe_name}")
 
         user_message = self._build_user_message(
             recipe_name, ingredients, nutrition_data,
@@ -173,7 +173,7 @@ class LLMSwapAgent:
 
         while iteration < self.max_iterations:
             iteration += 1
-            logger.info(f"Agent iteration {iteration}/{self.max_iterations}")
+            logger.info(f"🚨 [LLM] Agent iteration {iteration}/{self.max_iterations}")
 
             try:
                 response = self.client.models.generate_content(
@@ -210,7 +210,7 @@ class LLMSwapAgent:
                 final_text = "".join(
                     p.text for p in parts if p.text
                 )
-                logger.info(f"Agent finished after {iteration} iterations")
+                logger.info(f"🚨 [LLM] Agent finished after {iteration} iterations")
                 # Add assistant response to history for completeness
                 contents.append(candidate.content)
                 return self._parse_agent_response(final_text, tools_called, iteration)
@@ -227,7 +227,7 @@ class LLMSwapAgent:
                 fargs = dict(fc.args) if fc.args else {}
                 tools_called.append(fname)
 
-                logger.info(f"  Tool call: {fname}({fargs})")
+                logger.info(f"🚨 [LLM]   Tool call: {fname}({fargs})")
                 result = self._execute_tool(fname, fargs)
 
                 function_response_parts.append(

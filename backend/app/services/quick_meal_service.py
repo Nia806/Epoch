@@ -86,6 +86,7 @@ class QuickMealService:
                             recipe_ids_seen.add(recipe_id)
                 except Exception as e:
                     logger.warning(f"Error searching by method {method}: {str(e)}")
+                    logger.warning(f"[COSYLAB API FALLBACK] RecipeDB method search '{method}' failed in quick meals. Skipping this cooking method.")
         
         # Strategy 2: Search by quick meal categories
         for category in self.quick_categories:
@@ -98,6 +99,7 @@ class QuickMealService:
                         recipe_ids_seen.add(recipe_id)
             except Exception as e:
                 logger.warning(f"Error searching by category {category}: {str(e)}")
+                logger.warning(f"[COSYLAB API FALLBACK] RecipeDB category search '{category}' failed in quick meals. Skipping this category.")
         
         # Strategy 3: Search by diet type if specified
         if filters.diet_type:
@@ -110,6 +112,7 @@ class QuickMealService:
                         recipe_ids_seen.add(recipe_id)
             except Exception as e:
                 logger.warning(f"Error searching by diet {filters.diet_type}: {str(e)}")
+                logger.warning(f"[COSYLAB API FALLBACK] RecipeDB diet search '{filters.diet_type}' failed in quick meals. Skipping diet filter.")
         
         # Strategy 4: Search by cuisine if specified
         if filters.cuisine:
@@ -122,6 +125,7 @@ class QuickMealService:
                         recipe_ids_seen.add(recipe_id)
             except Exception as e:
                 logger.warning(f"Error searching by cuisine {filters.cuisine}: {str(e)}")
+                logger.warning(f"[COSYLAB API FALLBACK] RecipeDB cuisine search '{filters.cuisine}' failed in quick meals. Skipping cuisine filter.")
         
         logger.info(f"Found {len(all_recipes)} recipes from API before filtering")
         

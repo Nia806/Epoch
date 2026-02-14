@@ -72,7 +72,13 @@ class Settings(BaseModel):
     # API Configuration
     RECIPEDB_BASE_URL: str = Field(
         default_factory=lambda: os.getenv("RECIPEDB_BASE_URL", "https://cosylab.iiitd.edu.in/recipedb/search_recipedb"),
-        description="Base URL for RecipeDB API"
+        description="Base URL for RecipeDB API (legacy search_recipedb endpoints)"
+    )
+
+    # Recipe2 API: working CosyLab endpoint for recipe search by title/ingredients/categories
+    RECIPE2_API_BASE_URL: str = Field(
+        default_factory=lambda: os.getenv("RECIPE2_API_BASE_URL", "https://cosylab.iiitd.edu.in/recipe2-api"),
+        description="Base URL for Recipe2 API (by-ingredients-categories-title endpoint)"
     )
     
     FLAVORDB_BASE_URL: str = Field(

@@ -117,11 +117,11 @@ class AgentSwapResult(BaseModel):
             # Healthier substitutes generally lower calories, sat fat, sodium, sugar
             factor = max(0.3, 1.0 - sub.confidence * 0.5)
             for key in ["calories", "saturated_fat", "trans_fat", "sodium", "sugar", "cholesterol"]:
-                if key in result:
+                if key in result and result[key] != 0:
                     result[key] = result[key] - (result[key] * proportion * (1 - factor))
             # Fiber may increase
-            if "fiber" in result:
-                result[key] = result.get("fiber", 0) + (result.get("fiber", 0) * proportion * 0.2)
+            if "fiber" in result and result["fiber"] != 0:
+                result["fiber"] = result["fiber"] + (result["fiber"] * proportion * 0.2)
         return result
 
     def generate_explanation(self, original_score, improved_score) -> str:

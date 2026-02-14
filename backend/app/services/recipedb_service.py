@@ -49,6 +49,7 @@ class RecipeDBService:
     def __init__(self):
         """Initialize RecipeDB service with configuration."""
         self.base_url = (settings.RECIPEDB_BASE_URL or "").rstrip("/")
+        self.recipe2_api_base_url = (getattr(settings, "RECIPE2_API_BASE_URL", "") or "https://cosylab.iiitd.edu.in/recipe2-api").rstrip("/")
         rdb_timeout = getattr(settings, "RECIPEDB_TIMEOUT", None)
         self.timeout = (rdb_timeout if rdb_timeout and rdb_timeout > 0 else None) or settings.API_TIMEOUT
         self.api_key = settings.COSYLAB_API_KEY
@@ -58,6 +59,8 @@ class RecipeDBService:
         self.fallback_base_url = (fallback or "").strip().rstrip("/") or None
         self.max_retries = 3
         self.retry_delay = 1  # seconds
+        # Cache: inline nutrition extracted from recipe2-api responses (keyed by recipe_id)
+        self._inline_nutrition_cache: Dict[str, Dict] = {}
         # Rate limiting to avoid IP blocking
         self._rate_limit_delay = max(0.0, getattr(settings, "RECIPEDB_RATE_LIMIT_DELAY", 0.5))
         self._max_search_pages = max(1, min(20, getattr(settings, "RECIPEDB_MAX_SEARCH_PAGES", 5)))
@@ -69,6 +72,7 @@ class RecipeDBService:
             f"(Bearer: {self.use_bearer}, org endpoint: {self.org_endpoint}, "
             f"rate_limit_delay: {self._rate_limit_delay}s, max_search_pages: {self._max_search_pages})"
         )
+        logger.info(f"Recipe2 API base URL: {self.recipe2_api_base_url}")
         if self.api_key:
             logger.info(f"CosyLab API key is configured (length: {len(self.api_key)} chars)")
         else:
@@ -181,12 +185,18 @@ class RecipeDBService:
                 logger.warning(f"Rate limited (429). Retrying after {wait}s")
                 time.sleep(wait)
                 return self._handle_retry(endpoint, params, retry_count, "rate_limit")
-            # Don't retry on other 4xx errors (client errors)
+            # Don't retry on 4xx errors (client errors — includes 404 from dead endpoints)
             if status_code and 400 <= status_code < 500:
-                logger.error(
-                    f"RecipeDB request failed with {status_code} at {url}. "
-                    "Check COSYLAB_API_KEY, RECIPEDB_BASE_URL, and RECIPEDB_USE_BEARER_AUTH. Not retrying."
-                )
+                if status_code == 404:
+                    logger.warning(
+                        f"[COSYLAB API FALLBACK] RecipeDB endpoint '{endpoint}' returned 404 at {url}. "
+                        "Endpoint may be unavailable."
+                    )
+                else:
+                    logger.error(
+                        f"RecipeDB request failed with {status_code} at {url}. "
+                        "Check COSYLAB_API_KEY, RECIPEDB_BASE_URL, and RECIPEDB_USE_BEARER_AUTH."
+                    )
                 return None
             return self._handle_retry(endpoint, params, retry_count, "http_error")
             
@@ -199,24 +209,40 @@ class RecipeDBService:
             return None
     
     @staticmethod
+    def _normalize_title(text: str) -> str:
+        """Normalize a recipe title for comparison.
+
+        Collapses multiple spaces, strips apostrophes / special chars,
+        and lowercases.  "Greek Family Style  Shepherd's Pie" becomes
+        "greek family style shepherds pie".
+        """
+        t = (text or "").lower()
+        # strip apostrophes (Shepherd's -> Shepherds)
+        t = t.replace("'", "").replace("\u2019", "")
+        # collapse whitespace
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
+
+    @staticmethod
     def _recipe_title_matches_query(query: str, title: str) -> Tuple[str, bool]:
         """
         Check how well query matches recipe title. Returns (match_kind, is_match).
         match_kind: "exact" (substring), "all_words", "partial", or "" (no match).
         is_match: True if we should consider this recipe a hit.
         """
-        q = (query or "").strip().lower()
-        t = (title or "").lower()
+        q = RecipeDBService._normalize_title(query)
+        t = RecipeDBService._normalize_title(title)
         if not q or not t:
             return "", False
-        # 1. Exact substring (already supported)
+        # 1. Exact substring
         if q in t or t in q:
             return "exact", True
         # 2. Word-based: extract significant words from query (min 2 chars, not stopwords)
         words = [w for w in re.split(r"\W+", q) if len(w) >= 2 and w not in _RECIPE_NAME_STOPWORDS]
         if not words:
             return "", False
-        in_title = sum(1 for w in words if w in t)
+        t_words = set(re.split(r"\W+", t))
+        in_title = sum(1 for w in words if w in t_words or w in t)
         if in_title == len(words):
             return "all_words", True
         if in_title >= 1:
@@ -367,30 +393,133 @@ class RecipeDBService:
             return self._make_request(endpoint, params, retry_count + 1)
         else:
             logger.error(f"Max retries ({self.max_retries}) exceeded for {endpoint}")
+            logger.warning(f"[COSYLAB API FALLBACK] RecipeDB endpoint '{endpoint}' failed after {self.max_retries} retries ({error_type}). Returning empty result.")
             return None
     
+    def _recipe2_api_search(self, title_query: str, page: int = 1, limit: int = 10) -> List[Dict]:
+        """
+        Search recipes via the working Recipe2 API
+        (by-ingredients-categories-title endpoint).
+
+        Returns a list of raw recipe dicts straight from the API.
+        Each dict contains Recipe_id, Recipe_title, Calories,
+        Protein (g), Total lipid (fat) (g), Energy (kcal), etc.
+
+        NOTE: The recipe2-api enforces a maximum limit of 10 per page.
+        """
+        url = f"{self.recipe2_api_base_url}/recipebyingredient/by-ingredients-categories-title"
+        params = {"title": title_query.strip(), "page": page, "limit": min(limit, 10)}
+        self._wait_rate_limit()
+        try:
+            headers = {"Accept": "application/json"}
+            if self.api_key:
+                headers["x-api-key"] = self.api_key
+            logger.info(f"Recipe2 API search: {url} title={title_query}")
+            resp = requests.get(url, params=params, timeout=self.timeout, headers=headers)
+            # 404 means no recipe matched the query (not an error)
+            if resp.status_code == 404:
+                logger.info(f"Recipe2 API: no results for '{title_query}' (404)")
+                return []
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("success") == "true" and isinstance(body.get("data"), list):
+                logger.info(f"Recipe2 API returned {len(body['data'])} results")
+                return body["data"]
+            logger.info(f"Recipe2 API: no results (success={body.get('success')})")
+            return []
+        except Exception as e:
+            logger.warning(f"[COSYLAB API FALLBACK] Recipe2 API search failed: {e}")
+            return []
+
+    def _fetch_all_ingredients_for_recipe(
+        self, recipe_id: str, recipe_title: str
+    ) -> List[str]:
+        """
+        Collect ALL ingredient names for a given recipe from the recipe2-api.
+
+        The by-ingredients-categories-title endpoint returns one row per
+        ingredient.  We search using distinctive keywords from the title
+        and paginate, collecting every row whose Recipe_id matches.
+
+        Returns a deduplicated list of ingredient names
+        (the ``ingredient`` field, falling back to ``ingredient_Phrase``).
+        """
+        target_id = str(recipe_id)
+        seen: set = set()
+        ingredients: List[str] = []
+
+        # Build a search term that the API will accept.
+        # Extract the most distinctive keyword(s) from the title.
+        title_words = [
+            w for w in re.split(r"\W+", recipe_title)
+            if len(w) >= 2 and w.lower() not in _RECIPE_NAME_STOPWORDS
+        ]
+        # Build search terms: try many variations to maximize ingredient rows.
+        search_terms: List[str] = []
+        if title_words:
+            search_terms.append(" ".join(title_words))  # all keywords
+            longest = sorted(title_words, key=len, reverse=True)
+            for tw in longest[:3]:
+                # stem first (Shepherd matches Shepherd's in API)
+                if tw.lower().endswith("s") and len(tw) > 3:
+                    stem = tw[:-1]
+                    if stem not in search_terms:
+                        search_terms.append(stem)
+                if tw not in search_terms:
+                    search_terms.append(tw)
+        if not search_terms:
+            search_terms = [recipe_title.strip()]
+
+        for term in search_terms:
+            for page in range(1, 11):  # up to 10 pages
+                rows = self._recipe2_api_search(term, page=page, limit=10)
+                if not rows:
+                    break
+                found_any = False
+                for row in rows:
+                    rid = str(row.get("Recipe_id") or row.get("recipe_no") or "")
+                    if rid != target_id:
+                        continue
+                    found_any = True
+                    # Prefer the short "ingredient" name; fall back to full phrase
+                    ing = (
+                        row.get("ingredient")
+                        or row.get("ingredient_Phrase")
+                        or ""
+                    ).strip()
+                    if ing and ing not in seen:
+                        seen.add(ing)
+                        ingredients.append(ing)
+                # If the target recipe didn't appear and we already have some,
+                # we've likely exhausted its rows for this search term.
+                if not found_any and ingredients:
+                    break
+            if len(ingredients) >= 3:
+                # Got a reasonable number, stop trying more search terms
+                break
+
+        logger.info(
+            f"Collected {len(ingredients)} ingredients for recipe {recipe_id} "
+            f"({recipe_title})"
+        )
+        return ingredients
+
     def fetch_recipe_by_name(self, recipe_name: str) -> Optional[Dict]:
         """
-        Search for a recipe by its name using RecipeDB "Recipe By Title" endpoint.
-        
-        This method searches for recipes matching the given name. If multiple
-        recipes match, it returns the first result. The search is case-insensitive.
+        Search for a recipe by its name.
+
+        Strategy:
+        1. Recipe2 API (by-ingredients-categories-title) — working endpoint
+           with inline nutrition.  Tries exact title first, then falls back
+           to keyword search words for partial matching.
+        2. Legacy recipe_by_title endpoint (search_recipedb).
+        3. Org API recipesinfo paginated scan (Bearer auth only).
         
         Args:
-            recipe_name: Name of the recipe to search for (e.g., "Chicken Curry")
+            recipe_name: Name of the recipe to search for
             
         Returns:
-            Dict: Recipe data containing id, name, ingredients, cuisine, etc.
-                  Returns None if recipe not found or request fails.
-                  
-        Example return structure:
-            {
-                "id": "123",
-                "name": "Chicken Curry",
-                "ingredients": ["chicken", "curry powder", "onion"],
-                "cuisine": "Indian",
-                "diet_type": "non-vegetarian"
-            }
+            Dict with id, name, ingredients, cuisine, _raw, etc. or None.
         """
         logger.info(f"Fetching recipe by name: {recipe_name}")
         q = (recipe_name or "").strip()
@@ -398,11 +527,92 @@ class RecipeDBService:
             logger.warning("Empty recipe name")
             return None
 
-        # 1. Try dedicated endpoint: Recipe By Title (works with both Bearer and x-api-key)
+        # --- 1. Recipe2 API (primary — this endpoint is alive) ----------------
+        results = self._recipe2_api_search(q)
+        if not results:
+            # Try with significant words only (drop stopwords, 2+ chars)
+            words = [w for w in re.split(r"\W+", q) if len(w) >= 2 and w.lower() not in _RECIPE_NAME_STOPWORDS]
+            if words and len(words) > 1:
+                results = self._recipe2_api_search(" ".join(words))
+            if not results and words:
+                # Try longest / most distinctive words; also try de-possessified
+                # stems ("Shepherds" -> "Shepherd") to match API apostrophe forms
+                # like "Shepherd's".  Try stems FIRST since they match more.
+                longest = sorted(words, key=len, reverse=True)
+                tried: set = set()
+                for w in longest[:3]:
+                    candidates = []
+                    # stem first: strip trailing 's' (Shepherds -> Shepherd)
+                    if w.lower().endswith("s") and len(w) > 3:
+                        candidates.append(w[:-1])
+                    candidates.append(w)  # original second
+                    for c in candidates:
+                        cl = c.lower()
+                        if cl in tried:
+                            continue
+                        tried.add(cl)
+                        results = self._recipe2_api_search(c)
+                        if results:
+                            break
+                    if results:
+                        break
+
+        if results:
+            # Pick best match by title similarity.
+            # Prefer recipes whose title covers MORE query words.
+            best: Optional[Dict] = None
+            best_kind = ""
+            best_word_score = 0
+            q_norm = self._normalize_title(q)
+            q_words = [w for w in re.split(r"\W+", q_norm) if len(w) >= 2 and w not in _RECIPE_NAME_STOPWORDS]
+            for r in results:
+                title = r.get("Recipe_title") or r.get("name") or ""
+                kind, is_match = self._recipe_title_matches_query(q, title)
+                if not is_match:
+                    continue
+                # Score: how many query words appear in the title
+                t_norm = self._normalize_title(title)
+                word_score = sum(1 for w in q_words if w in t_norm)
+                # exact substring match is strongest
+                if kind == "exact" and word_score >= best_word_score:
+                    best = r
+                    best_kind = kind
+                    best_word_score = word_score
+                elif kind == "all_words" and (best_kind not in ("exact",) or word_score > best_word_score):
+                    if word_score >= best_word_score:
+                        best = r
+                        best_kind = kind
+                        best_word_score = word_score
+                elif kind == "partial" and best is None:
+                    best = r
+                    best_kind = kind
+                    best_word_score = word_score
+            # If no fuzzy match, just take the first result
+            if best is None and results:
+                best = results[0]
+                best_kind = "first_result"
+            if best:
+                out = self._org_recipe_to_standard(best)
+                rid = out.get("id", "")
+                exact_title = best.get("Recipe_title") or ""
+                # Fetch ALL ingredients for this recipe via pagination
+                if not out.get("ingredients"):
+                    all_ings = self._fetch_all_ingredients_for_recipe(rid, exact_title)
+                    if all_ings:
+                        out["ingredients"] = all_ings
+                # Cache inline nutrition from the recipe2-api response
+                self._cache_inline_nutrition(rid, best)
+                logger.info(
+                    f"Found recipe via Recipe2 API ({best_kind}): "
+                    f"{out.get('name')} (ID: {rid}), "
+                    f"{len(out.get('ingredients', []))} ingredients"
+                )
+                return out
+
+        # --- 2. Legacy: recipe_by_title (search_recipedb) ---------------------
         params = {"title": recipe_name.strip()}
         response = self._make_request("recipe_by_title", params)
         if response is not None:
-            # Unwrap payload.data (single object or list)
             data = self._extract_payload_data(response) if isinstance(response, dict) else response
             if isinstance(data, list) and len(data) > 0:
                 recipe = data[0]
@@ -419,7 +629,7 @@ class RecipeDBService:
                 logger.info(f"Found recipe via Recipe By Title: {out.get('name')} (ID: {out.get('id')})")
                 return out
 
-        # 2. Fallback: org API recipesinfo (paginated list + client-side search)
+        # --- 3. Org API recipesinfo scan (Bearer only) ------------------------
         if self.use_bearer:
             best_all_words: Optional[Dict] = None
             best_partial: Optional[Dict] = None
@@ -449,36 +659,51 @@ class RecipeDBService:
 
         logger.warning(f"No recipe found for name: {recipe_name}")
         return None
+
+    def _cache_inline_nutrition(self, recipe_id: str, raw: Dict) -> None:
+        """Cache inline nutrition from a recipe2-api response for later use by fetch_nutrition_info."""
+        if not recipe_id:
+            return
+        nutrition = self._parse_nutrition_response(raw)
+        # recipe2-api returns Calories and Energy (kcal) at top level
+        cal_val = raw.get("Calories") or raw.get("calories") or raw.get("Energy (kcal)")
+        if cal_val is not None:
+            try:
+                nutrition["calories"] = float(str(cal_val).replace(",", ""))
+            except (TypeError, ValueError):
+                pass
+        if nutrition.get("calories", 0) > 0 or nutrition.get("protein", 0) > 0:
+            self._inline_nutrition_cache[str(recipe_id)] = nutrition
+            logger.info(
+                f"Cached inline nutrition for recipe {recipe_id}: "
+                f"{nutrition.get('calories', 0)} cal, {nutrition.get('protein', 0)}g protein"
+            )
     
     def fetch_nutrition_info(self, recipe_id: str) -> Dict:
         """
-        Get macronutrient data for a recipe using "Recipe Nutrition Info" endpoint.
-        
-        Fetches comprehensive macronutrient information including calories,
-        protein, carbohydrates, fats, sodium, sugar, and cholesterol.
+        Get macronutrient data for a recipe.
+
+        Priority:
+        1. Inline nutrition cache (populated by recipe2-api search)
+        2. Dedicated recipe_nutrition_info endpoint (legacy search_recipedb)
+        3. Org API recipesinfo scan (Bearer auth)
         
         Args:
             recipe_id: Unique identifier for the recipe
             
         Returns:
-            Dict: Macronutrient data with the following structure:
-                {
-                    "calories": float,
-                    "protein": float (grams),
-                    "carbs": float (grams),
-                    "fat": float (grams),
-                    "saturated_fat": float (grams),
-                    "trans_fat": float (grams),
-                    "sodium": float (mg),
-                    "sugar": float (grams),
-                    "cholesterol": float (mg),
-                    "fiber": float (grams)
-                }
+            Dict: Standardized nutrition data (calories, protein, carbs, fat, etc.)
                 
         Raises:
-            ValueError: If recipe_id is invalid or nutrition data unavailable
+            ValueError: If nutrition data cannot be obtained from any source
         """
         logger.info(f"Fetching nutrition info for recipe ID: {recipe_id}")
+
+        # 0. Check inline nutrition cache (from recipe2-api search)
+        cached = self._inline_nutrition_cache.get(str(recipe_id))
+        if cached and (cached.get("calories", 0) > 0 or cached.get("protein", 0) > 0):
+            logger.info(f"Using cached inline nutrition for recipe {recipe_id}: {cached.get('calories', 0)} cal")
+            return cached
 
         # 1. Try dedicated endpoint: Recipe Nutrition Info (same path for Bearer and x-api-key)
         params = {"id": recipe_id}

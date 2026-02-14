@@ -153,6 +153,7 @@ class FlavorDBService:
             return self._make_request(endpoint, params, retry_count + 1)
         else:
             logger.error(f"Max retries ({self.max_retries}) exceeded for {endpoint}")
+            logger.warning(f"[COSYLAB API FALLBACK] FlavorDB endpoint '{endpoint}' failed after {self.max_retries} retries ({error_type}). Returning empty result.")
             return None
     
     @lru_cache(maxsize=200)
@@ -197,6 +198,7 @@ class FlavorDBService:
         
         if not response:
             logger.warning(f"No flavor profile found for ingredient: {ingredient_name}")
+            logger.warning(f"[COSYLAB API FALLBACK] FlavorDB returned no flavor profile for '{ingredient_name}'. Using empty profile fallback.")
             return {
                 "ingredient": ingredient_name,
                 "molecules": [],
@@ -291,6 +293,7 @@ class FlavorDBService:
         
         if not response:
             logger.warning(f"No flavor pairings found for ingredient: {ingredient_name}")
+            logger.warning(f"[COSYLAB API FALLBACK] FlavorDB returned no pairings for '{ingredient_name}'. Returning empty pairings list.")
             return []
         
         # Parse pairings response

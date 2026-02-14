@@ -441,10 +441,33 @@ async def analyze_full(request: FullAnalysisRequest) -> FullAnalysisResponse:
         if nutrition_data is None:
             from app.utils.helpers import estimate_nutrition_from_ingredients
             logger.warning("⚠️ Using ingredient-based nutrition estimate (RecipeDB not available)")
+            logger.warning("[COSYLAB API FALLBACK] RecipeDB nutrition endpoint did not return data for /analyze-full. Using ingredient-based estimation instead.")
             nutrition_data = estimate_nutrition_from_ingredients(ingredients)
             used_llm_fallback = True
+        else:
+            # Supplement missing negative-factor fields from ingredient estimates
+            # recipe2-api only provides calories/protein/fat — sugar, sodium,
+            # saturated_fat, cholesterol, carbs, fiber are all 0, which makes
+            # swap rescoring impossible (multiplying 0 yields 0).
+            _NEGATIVE_KEYS = ["sugar", "sodium", "saturated_fat", "trans_fat",
+                              "cholesterol", "carbs", "fiber"]
+            missing = [k for k in _NEGATIVE_KEYS if nutrition_data.get(k, 0) == 0]
+            if missing and ingredients:
+                from app.utils.helpers import estimate_nutrition_from_ingredients
+                est = estimate_nutrition_from_ingredients(ingredients)
+                supplemented = []
+                for k in missing:
+                    if est.get(k, 0) > 0:
+                        nutrition_data[k] = est[k]
+                        supplemented.append(f"{k}={est[k]}")
+                if supplemented:
+                    logger.info(
+                        f"Supplemented missing nutrition fields from ingredient "
+                        f"estimates: {', '.join(supplemented)}"
+                    )
         if micro_nutrition_data is None:
             logger.warning("⚠️ Using FALLBACK micronutrient data - API call may have failed!")
+            logger.warning("[COSYLAB API FALLBACK] RecipeDB micronutrient endpoint did not return data for /analyze-full. Using zeroed fallback values.")
             micro_nutrition_data = {
                 "vitamins": {k: 0.0 for k in [
                     "vitamin_a", "vitamin_c", "vitamin_d", "vitamin_e",
@@ -470,7 +493,7 @@ async def analyze_full(request: FullAnalysisRequest) -> FullAnalysisResponse:
         # Check if using fallback data
         if nutrition_data.get("calories") == 250.0 and nutrition_data.get("protein") == 10.0:
             logger.warning("⚠️ WARNING: Health score calculated using FALLBACK nutrition data!")
-            logger.warning("⚠️ This means the CosyLab API is not returning data. Check API key and connectivity.")
+            logger.warning("[COSYLAB API FALLBACK] CosyLab API is not returning nutrition data. Check COSYLAB_API_KEY and network connectivity to cosylab.iiitd.edu.in.")
 
         # ------------------------------------------------------------------
         # 3. Detect allergens
@@ -517,6 +540,7 @@ async def analyze_full(request: FullAnalysisRequest) -> FullAnalysisResponse:
                     similar_recipe = recs[0].to_dict()
             except Exception as e:
                 logger.warning(f"Similar recipe search failed: {e}")
+                logger.warning("[COSYLAB API FALLBACK] RecipeDB similar-recipe search failed for /analyze-full. Skipping healthier recipe suggestion.")
 
         # ------------------------------------------------------------------
         # 6-9. Swap discovery + scoring (LLM agent or rule-based fallback)
@@ -532,7 +556,7 @@ async def analyze_full(request: FullAnalysisRequest) -> FullAnalysisResponse:
         if llm_swap_agent:
             # ── LLM Agent Path ─────────────────────────────────────────
             try:
-                logger.info("Running LLM swap agent (Gemini)")
+                logger.info("🚨 [LLM] Running LLM swap agent (Gemini) for ingredient analysis and swap generation")
                 agent_result = llm_swap_agent.run(
                     recipe_name=request.recipe_name,
                     ingredients=ingredients,
@@ -568,12 +592,13 @@ async def analyze_full(request: FullAnalysisRequest) -> FullAnalysisResponse:
                 agent_metadata = agent_result.to_metadata_dict()
 
                 logger.info(
-                    f"Agent done: {len(agent_result.substitutions)} subs, "
+                    f"🚨 [LLM] Agent done: {len(agent_result.substitutions)} subs, "
                     f"confidence={agent_result.overall_confidence:.2f}, "
                     f"completeness={agent_result.data_completeness}"
                 )
             except Exception as e:
                 logger.error(f"LLM agent failed, falling back to rules: {e}", exc_info=True)
+                logger.warning("[LLM FALLBACK] Gemini LLM swap agent failed for /analyze-full. Falling back to rule-based swap engine.")
                 # Reset so we fall through to the rule-based path
                 risky_ingredients = []
                 swap_suggestions = []
@@ -997,26 +1022,34 @@ async def recalculate_score(request: RecalculateRequest) -> RecalculateResponse:
                 micro_nutrition_data = recipedb_service.fetch_micro_nutrition_info(recipe_id)
         except Exception as e:
             logger.warning(f"Could not fetch recipe from RecipeDB: {e}")
+            logger.warning("[COSYLAB API FALLBACK] RecipeDB recipe fetch failed for /recalculate. Will use hardcoded fallback nutrition.")
 
         # Fallback nutrition estimates if not found
         if nutrition_data is None:
-            nutrition_data = {
-                "calories": 250.0, "protein": 10.0, "carbs": 30.0,
-                "fat": 12.0, "saturated_fat": 4.0, "trans_fat": 0.0,
-                "sodium": 300.0, "sugar": 15.0, "cholesterol": 30.0,
-                "fiber": 2.0,
-            }
+            logger.warning("[COSYLAB API FALLBACK] RecipeDB nutrition data unavailable for /recalculate. Using ingredient-based fallback values.")
+            from app.utils.helpers import estimate_nutrition_from_ingredients
+            nutrition_data = estimate_nutrition_from_ingredients(original_ingredients)
+        else:
+            # Supplement missing negative-factor fields from ingredient estimates
+            _NEGATIVE_KEYS = ["sugar", "sodium", "saturated_fat", "trans_fat",
+                              "cholesterol", "carbs", "fiber"]
+            missing = [k for k in _NEGATIVE_KEYS if nutrition_data.get(k, 0) == 0]
+            if missing and original_ingredients:
+                from app.utils.helpers import estimate_nutrition_from_ingredients
+                est = estimate_nutrition_from_ingredients(original_ingredients)
+                supplemented = []
+                for k in missing:
+                    if est.get(k, 0) > 0:
+                        nutrition_data[k] = est[k]
+                        supplemented.append(f"{k}={est[k]}")
+                if supplemented:
+                    logger.info(
+                        f"Supplemented missing nutrition fields for /recalculate: "
+                        f"{', '.join(supplemented)}"
+                    )
         if micro_nutrition_data is None:
+            logger.warning("[COSYLAB API FALLBACK] RecipeDB micronutrient data unavailable for /recalculate. Using zeroed fallback values.")
             micro_nutrition_data = {
-                "vitamins": {k: 0.0 for k in [
-                    "vitamin_a", "vitamin_c", "vitamin_d", "vitamin_e",
-                    "vitamin_k", "thiamin", "riboflavin", "niacin",
-                    "vitamin_b6", "folate", "vitamin_b12",
-                ]},
-                "minerals": {k: 0.0 for k in [
-                    "calcium", "iron", "magnesium", "phosphorus",
-                    "potassium", "zinc", "selenium",
-                ]},
             }
 
         # Step 3: Calculate original score for comparison
