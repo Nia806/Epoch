@@ -256,3 +256,159 @@ class RecipeSearchFilters(BaseModel):
             if v < info.data['min_protein']:
                 raise ValueError('max_protein must be greater than min_protein')
         return v
+
+
+class QuickMealFilters(BaseModel):
+    """
+    Filter parameters for quick, healthy, practical meal suggestions.
+    
+    Designed for users who want fast, budget-friendly recipes with minimal
+    ingredients. Particularly useful for students in hostels/PGs.
+    
+    Attributes:
+        max_prep_time: Maximum preparation time in minutes (default: 5)
+        max_ingredients: Maximum number of ingredients (default: 3)
+        max_cost: Maximum cost per serving in INR (default: 100)
+        hostel_friendly: Whether recipe should be hostel/PG-friendly (default: True)
+        cuisine: Optional cuisine filter
+        diet_type: Optional diet type filter (vegetarian, vegan, etc.)
+    """
+    max_prep_time: int = Field(
+        5,
+        ge=1,
+        le=30,
+        description="Maximum preparation time in minutes"
+    )
+    max_ingredients: int = Field(
+        3,
+        ge=1,
+        le=10,
+        description="Maximum number of ingredients"
+    )
+    max_cost: int = Field(
+        100,
+        ge=10,
+        le=500,
+        description="Maximum cost per serving in INR"
+    )
+    hostel_friendly: bool = Field(
+        True,
+        description="Filter for hostel/PG-friendly recipes (no oven, minimal equipment)"
+    )
+    cuisine: Optional[str] = Field(
+        None,
+        description="Optional cuisine filter (e.g., 'Indian', 'Italian')"
+    )
+    diet_type: Optional[str] = Field(
+        None,
+        description="Optional diet type filter (e.g., 'vegetarian', 'vegan')"
+    )
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "max_prep_time": 5,
+                "max_ingredients": 3,
+                "max_cost": 100,
+                "hostel_friendly": True,
+                "cuisine": "Indian",
+                "diet_type": "vegetarian"
+            }
+        }
+    }
+
+
+class QuickMealRecipe(BaseModel):
+    """
+    Quick meal recipe model with practical information.
+    
+    Contains recipe data plus quick meal specific metadata like
+    estimated cost and equipment requirements.
+    
+    Attributes:
+        recipe: Basic recipe information
+        ingredient_count: Number of ingredients in the recipe
+        estimated_cost: Estimated cost per serving in INR
+        equipment_needed: List of simple equipment needed
+        practical_tips: Quick tips for preparation
+    """
+    recipe: RecipeBasic = Field(..., description="Recipe data")
+    ingredient_count: int = Field(..., ge=1, description="Number of ingredients")
+    estimated_cost: int = Field(..., ge=0, description="Estimated cost per serving (INR)")
+    equipment_needed: List[str] = Field(
+        default_factory=list,
+        description="Simple equipment required (e.g., 'pan', 'bowl')"
+    )
+    practical_tips: Optional[str] = Field(
+        None,
+        description="Quick preparation tips"
+    )
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "recipe": {
+                    "id": "quick001",
+                    "name": "Banana Peanut Butter Toast",
+                    "cuisine": "Continental",
+                    "diet_type": "vegetarian",
+                    "ingredients": ["bread", "peanut butter", "banana"],
+                    "prep_time": 3,
+                    "servings": 1
+                },
+                "ingredient_count": 3,
+                "estimated_cost": 30,
+                "equipment_needed": ["plate", "knife"],
+                "practical_tips": "Use whole wheat bread for extra fiber. Slice banana thinly for even spread."
+            }
+        }
+    }
+
+
+class QuickMealResponse(BaseModel):
+    """
+    Response model for quick meal filter endpoint.
+    
+    Returns a list of quick, practical meals matching the filter criteria,
+    along with metadata about the search.
+    
+    Attributes:
+        meals: List of quick meal recipes
+        total_found: Total number of meals found
+        filters_applied: Summary of filters applied
+        psychological_tip: Helpful tip about preventing cravings
+    """
+    meals: List[QuickMealRecipe] = Field(..., description="List of quick meal recipes")
+    total_found: int = Field(..., ge=0, description="Total number of meals found")
+    filters_applied: Dict[str, any] = Field(..., description="Summary of applied filters")
+    psychological_tip: str = Field(
+        default="Quick healthy meals help stabilize blood sugar and reduce extreme hunger, making it easier to avoid cravings for junk food.",
+        description="Psychological insight about healthy eating"
+    )
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "meals": [
+                    {
+                        "recipe": {
+                            "id": "quick001",
+                            "name": "Banana Peanut Butter Toast",
+                            "ingredients": ["bread", "peanut butter", "banana"],
+                            "prep_time": 3
+                        },
+                        "ingredient_count": 3,
+                        "estimated_cost": 30,
+                        "equipment_needed": ["plate", "knife"]
+                    }
+                ],
+                "total_found": 15,
+                "filters_applied": {
+                    "max_prep_time": 5,
+                    "max_ingredients": 3,
+                    "max_cost": 100
+                },
+                "psychological_tip": "Quick healthy meals prevent extreme hunger and keep blood sugar stable."
+            }
+        }
+    }

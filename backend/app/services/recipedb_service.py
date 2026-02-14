@@ -16,6 +16,11 @@ Available endpoints:
 - Recipe By Cuisine
 - Recipe By Recipe Diet
 - Recipe By Id
+- Recipe By Utensils
+- Recipe By Recipes Method
+- Recipe By Category
+- Recipe By Recipe Day Category
+- Recipe By Carbs
 """
 
 import requests
@@ -53,10 +58,10 @@ class RecipeDBService:
 
         logger.info(f"RecipeDB service initialized with base URL: {self.base_url}")
         if self.api_key:
-            logger.info(f"✅ CosyLab API key is configured (length: {len(self.api_key)} chars)")
+            logger.info(f"CosyLab API key is configured (length: {len(self.api_key)} chars)")
         else:
-            logger.warning("⚠️ CosyLab API key is NOT configured! Set COSYLAB_API_KEY in .env file")
-            logger.warning("⚠️ API requests may fail without authentication")
+            logger.warning("CosyLab API key is NOT configured! Set COSYLAB_API_KEY in .env file")
+            logger.warning("API requests may fail without authentication")
     
     def _make_request(
         self,
@@ -84,14 +89,14 @@ class RecipeDBService:
         url = f"{self.base_url}/{endpoint}"
         
         try:
-            logger.info(f"🌐 Making API request to {url} with params: {params}")
-            logger.info(f"🔑 API Key present: {'Yes' if self.api_key else 'No'}")
+            logger.info(f"Making API request to {url} with params: {params}")
+            logger.info(f"API Key present: {'Yes' if self.api_key else 'No'}")
             
             headers = {"Accept": "application/json"}
             if self.api_key:
                 headers["x-api-key"] = self.api_key
             else:
-                logger.warning("⚠️ No API key configured! Request may fail if API requires authentication.")
+                logger.warning("No API key configured! Request may fail if API requires authentication.")
 
             response = requests.get(
                 url,
@@ -100,14 +105,14 @@ class RecipeDBService:
                 headers=headers,
             )
             
-            logger.info(f"📡 API Response Status: {response.status_code}")
+            logger.info(f"API Response Status: {response.status_code}")
             
             # Check for HTTP errors
             response.raise_for_status()
             
             # Parse JSON response
             data = response.json()
-            logger.info(f"✅ Request successful. Response size: {len(str(data))} bytes")
+            logger.info(f"Request successful. Response size: {len(str(data))} bytes")
             logger.debug(f"Response data preview: {str(data)[:200]}...")
             
             return data
@@ -122,7 +127,7 @@ class RecipeDBService:
             
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code if e.response else None
-            logger.error(f"❌ HTTP error for {url}: Status {status_code if status_code else 'unknown'}")
+            logger.error(f"HTTP error for {url}: Status {status_code if status_code else 'unknown'}")
             if e.response:
                 try:
                     error_body = e.response.text[:500]
@@ -131,7 +136,7 @@ class RecipeDBService:
                     pass
             # Don't retry on 4xx errors (client errors)
             if status_code and 400 <= status_code < 500:
-                logger.error(f"❌ Client error (4xx) - likely API key issue or invalid request. Not retrying.")
+                logger.error(f"Client error (4xx) - likely API key issue or invalid request. Not retrying.")
                 return None
             return self._handle_retry(endpoint, params, retry_count, "http_error")
             
@@ -591,6 +596,161 @@ class RecipeDBService:
         except Exception as e:
             logger.error(f"RecipeDB availability check failed: {str(e)}")
             return False
+    
+    def search_by_utensils(self, utensils: str) -> List[Dict]:
+        """
+        Find recipes by required utensils using "Recipe By Utensils" endpoint.
+        
+        Useful for filtering recipes based on available equipment.
+        
+        Args:
+            utensils: Utensil/equipment name (e.g., "pan", "microwave", "no-cook")
+            
+        Returns:
+            List[Dict]: List of recipe dictionaries requiring specified utensils.
+                        Returns empty list if no recipes found.
+                        
+        Example:
+            recipes = service.search_by_utensils("microwave")
+        """
+        logger.info(f"Searching recipes by utensils: {utensils}")
+        
+        params = {"utensils": utensils}
+        response = self._make_request("recipe_by_utensils", params)
+        
+        if not response:
+            logger.warning(f"No recipes found for utensils: {utensils}")
+            return []
+        
+        recipes = response if isinstance(response, list) else [response]
+        
+        logger.info(f"Found {len(recipes)} recipes for utensils: {utensils}")
+        return recipes
+    
+    def search_by_method(self, method: str) -> List[Dict]:
+        """
+        Find recipes by cooking method using "Recipe By Recipes Method" endpoint.
+        
+        Useful for filtering by preparation style (e.g., "no-cook", "microwave").
+        
+        Args:
+            method: Cooking method (e.g., "no-cook", "bake", "fry", "microwave")
+            
+        Returns:
+            List[Dict]: List of recipe dictionaries using specified method.
+                        Returns empty list if no recipes found.
+                        
+        Example:
+            recipes = service.search_by_method("no-cook")
+        """
+        logger.info(f"Searching recipes by method: {method}")
+        
+        params = {"method": method}
+        response = self._make_request("recipe_by_recipes_method", params)
+        
+        if not response:
+            logger.warning(f"No recipes found for method: {method}")
+            return []
+        
+        recipes = response if isinstance(response, list) else [response]
+        
+        logger.info(f"Found {len(recipes)} recipes for method: {method}")
+        return recipes
+    
+    def search_by_category(self, category: str) -> List[Dict]:
+        """
+        Find recipes by category using "Recipe By Category" endpoint.
+        
+        Useful for finding specific meal types.
+        
+        Args:
+            category: Recipe category (e.g., "quick meals", "snacks")
+            
+        Returns:
+            List[Dict]: List of recipe dictionaries in specified category.
+                        Returns empty list if no recipes found.
+                        
+        Example:
+            recipes = service.search_by_category("snacks")
+        """
+        logger.info(f"Searching recipes by category: {category}")
+        
+        params = {"category": category}
+        response = self._make_request("recipe_by_category", params)
+        
+        if not response:
+            logger.warning(f"No recipes found for category: {category}")
+            return []
+        
+        recipes = response if isinstance(response, list) else [response]
+        
+        logger.info(f"Found {len(recipes)} recipes for category: {category}")
+        return recipes
+    
+    def search_by_day_category(self, day_category: str) -> List[Dict]:
+        """
+        Find recipes by day category using "Recipe By Recipe Day Category" endpoint.
+        
+        Useful for finding meals for specific times of day.
+        
+        Args:
+            day_category: Day category (e.g., "breakfast", "lunch", "dinner", "snack")
+            
+        Returns:
+            List[Dict]: List of recipe dictionaries for specified day category.
+                        Returns empty list if no recipes found.
+                        
+        Example:
+            recipes = service.search_by_day_category("breakfast")
+        """
+        logger.info(f"Searching recipes by day category: {day_category}")
+        
+        params = {"day_category": day_category}
+        response = self._make_request("recipe_by_recipe_day_category", params)
+        
+        if not response:
+            logger.warning(f"No recipes found for day category: {day_category}")
+            return []
+        
+        recipes = response if isinstance(response, list) else [response]
+        
+        logger.info(f"Found {len(recipes)} recipes for day category: {day_category}")
+        return recipes
+    
+    def search_by_carbs(self, min_carbs: float, max_carbs: float) -> List[Dict]:
+        """
+        Find recipes within a specific carbohydrate range using "Recipe By Carbs" endpoint.
+        
+        Useful for finding recipes with specific carb content.
+        
+        Args:
+            min_carbs: Minimum carbohydrates in grams (inclusive)
+            max_carbs: Maximum carbohydrates in grams (inclusive)
+            
+        Returns:
+            List[Dict]: List of recipe dictionaries matching carb criteria.
+                        Returns empty list if no recipes found.
+                        
+        Example:
+            recipes = service.search_by_carbs(20.0, 50.0)
+        """
+        logger.info(f"Searching recipes by carbs: {min_carbs}g-{max_carbs}g")
+        
+        params = {
+            "min_carbs": min_carbs,
+            "max_carbs": max_carbs
+        }
+        
+        response = self._make_request("recipe_by_carbs", params)
+        
+        if not response:
+            logger.warning(f"No recipes found in carbs range: {min_carbs}g-{max_carbs}g")
+            return []
+        
+        recipes = response if isinstance(response, list) else [response]
+        
+        logger.info(f"Found {len(recipes)} recipes in carbs range")
+        return recipes
     
     def clear_cache(self):
         """

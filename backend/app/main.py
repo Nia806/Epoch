@@ -22,7 +22,9 @@ import requests
 from app.models.recipe import (
     RecipeAnalysisRequest,
     FullAnalysisRequest,
-    RecipeRecommendation
+    RecipeRecommendation,
+    QuickMealFilters,
+    QuickMealResponse
 )
 from app.models.swap import (
     IngredientSwapRequest,
@@ -41,6 +43,7 @@ from app.services.flavordb_extended import FlavorDBExtendedService
 from app.services.swap_engine import SwapEngine
 from app.services.llm_explainer import LLMExplainer
 from app.services.llm_swap_agent import LLMSwapAgent
+from app.services.quick_meal_service import QuickMealService
 from app.config import settings
 
 # Configure logging
@@ -114,6 +117,7 @@ ingredient_analyzer = IngredientAnalyzer()
 flavordb_service = FlavorDBService()
 swap_engine = SwapEngine(flavordb_service, health_scorer)
 llm_explainer = LLMExplainer() if settings.USE_LLM_EXPLANATIONS else None
+quick_meal_service = QuickMealService(recipedb_service)
 
 # Initialize LLM swap agent (if configured)
 llm_swap_agent = None
@@ -842,6 +846,67 @@ async def get_recommendations(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch recommendations: {str(e)}"
+        )
+
+
+@app.post("/quick-meals", response_model=QuickMealResponse)
+async def get_quick_meals(filters: QuickMealFilters) -> QuickMealResponse:
+    """
+    Get quick, healthy, practical meal suggestions filtered by preparation time,
+    ingredient count, cost, and hostel-friendliness.
+    
+    This endpoint is designed to help users (especially students in hostels/PGs)
+    find fast, budget-friendly recipes that prevent cravings by keeping blood
+    sugar stable and removing the excuse of "nothing to eat".
+    
+    Psychological Benefits:
+    - Prevents extreme hunger by providing quick meal options
+    - Reduces decision fatigue with simple, clear choices
+    - Makes healthy eating more convenient than junk food
+    - Removes barriers to healthy eating (time, cost, equipment)
+    
+    Args:
+        filters: QuickMealFilters with criteria:
+            - max_prep_time: Maximum preparation time (default: 5 minutes)
+            - max_ingredients: Maximum number of ingredients (default: 3)
+            - max_cost: Maximum cost per serving in INR (default: ₹100)
+            - hostel_friendly: Filter for hostel/PG-friendly recipes (default: True)
+            - cuisine: Optional cuisine filter
+            - diet_type: Optional diet type filter
+            
+    Returns:
+        QuickMealResponse: List of quick meal recipes with practical information
+        
+    Raises:
+        HTTPException: 500 if filtering fails
+        
+    Example:
+        POST /quick-meals
+        {
+            "max_prep_time": 5,
+            "max_ingredients": 3,
+            "max_cost": 100,
+            "hostel_friendly": true,
+            "diet_type": "vegetarian"
+        }
+    """
+    try:
+        logger.info(f"Fetching quick meals with filters: {filters}")
+        
+        # Get filtered quick meals
+        response = quick_meal_service.filter_quick_meals(
+            filters=filters,
+            limit=5  # Return up to 5 meals
+        )
+        
+        logger.info(f"Found {response.total_found} quick meals matching criteria")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error fetching quick meals: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch quick meals: {str(e)}"
         )
 
 
