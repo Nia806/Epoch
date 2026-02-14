@@ -157,6 +157,7 @@ class RecommendationEngine:
             original_micro = self.recipedb_service.fetch_micro_nutrition_info(recipe_id)
         except Exception as e:
             logger.error(f"Failed to fetch nutrition for original recipe: {str(e)}")
+            logger.warning("[COSYLAB API FALLBACK] RecipeDB nutrition fetch failed for recommendation engine. Using empty nutrition data.")
             original_nutrition = {}
             original_micro = {}
         
@@ -236,8 +237,7 @@ class RecommendationEngine:
                         seen_ids.add(recipe_id)
             except Exception as e:
                 logger.warning(f"Cuisine search failed: {str(e)}")
-        
-        # Query 2: By calories
+                logger.warning("[COSYLAB API FALLBACK] RecipeDB cuisine search failed in recommendations. Skipping cuisine-based candidates.")
         calories = original_nutrition.get("calories", 0)
         if calories > 0:
             calorie_min = max(0, calories - 100)
@@ -256,8 +256,7 @@ class RecommendationEngine:
                         seen_ids.add(recipe_id)
             except Exception as e:
                 logger.warning(f"Calorie search failed: {str(e)}")
-        
-        # Query 3: By protein
+                logger.warning("[COSYLAB API FALLBACK] RecipeDB calorie-range search failed in recommendations. Skipping calorie-based candidates.")
         protein = original_nutrition.get("protein", 0)
         if protein > 0:
             protein_min = max(0, protein - 5)
@@ -275,8 +274,7 @@ class RecommendationEngine:
                         seen_ids.add(recipe_id)
             except Exception as e:
                 logger.warning(f"Protein search failed: {str(e)}")
-        
-        # Query 4: By diet type if available
+                logger.warning("[COSYLAB API FALLBACK] RecipeDB protein-range search failed in recommendations. Skipping protein-based candidates.")
         diet_type = original_recipe.get("diet_type")
         if diet_type:
             logger.debug(f"Querying recipes by diet: {diet_type}")
@@ -289,8 +287,7 @@ class RecommendationEngine:
                         seen_ids.add(recipe_id)
             except Exception as e:
                 logger.warning(f"Diet search failed: {str(e)}")
-        
-        logger.debug(f"Collected {len(candidates)} unique candidate recipes")
+                logger.warning("[COSYLAB API FALLBACK] RecipeDB diet search failed in recommendations. Skipping diet-based candidates.")
         
         return candidates
     
@@ -356,8 +353,7 @@ class RecommendationEngine:
         
         except Exception as e:
             logger.warning(f"Could not fetch nutrition for similarity calc: {str(e)}")
-        
-        # Factor 4: Shared ingredients (30 points)
+            logger.warning("[COSYLAB API FALLBACK] RecipeDB nutrition fetch failed during recipe similarity calculation. Nutrition-based scoring skipped.")
         ingredients1 = recipe1.get("ingredients", [])
         ingredients2 = recipe2.get("ingredients", [])
         
@@ -443,6 +439,7 @@ class RecommendationEngine:
                 logger.warning(
                     f"Could not score recipe {recipe_id}: {str(e)}"
                 )
+                logger.warning(f"[COSYLAB API FALLBACK] RecipeDB nutrition fetch failed while scoring recipe '{recipe_id}' in health filter. Skipping this recipe.")
                 continue
         
         logger.info(

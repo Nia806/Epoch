@@ -331,6 +331,7 @@ class SwapEngine:
                 logger.warning(
                     f"Error processing candidate {candidate}: {str(e)}"
                 )
+                logger.warning(f"[COSYLAB API FALLBACK] FlavorDB flavor similarity lookup failed for swap candidate '{candidate}'. Skipping this candidate.")
                 continue
         
         # Semantic re-ranking (Phase 1: transformer replacement)
@@ -595,6 +596,16 @@ class SwapEngine:
         num_ingredients = max(total_ingredients, len(accepted_swaps) + 3)
         ingredient_share = 1.0 / num_ingredients
 
+        # Only adjust nutrients that feed into health-score penalties
+        # (negative factors) and fiber.  Never touch calories, protein,
+        # carbs or fat — changing the calorie denominator without
+        # proportionally changing macros distorts percentage-based
+        # macro scoring and can make the score *decrease*.
+        ADJUSTABLE_NUTRIENTS = {
+            "sugar", "sodium", "saturated_fat", "trans_fat",
+            "cholesterol", "fiber",
+        }
+
         for swap in accepted_swaps:
             substitute_obj = swap.get("substitute", {})
 
@@ -606,8 +617,16 @@ class SwapEngine:
             adjustments = self._get_nutrition_adjustments(substitute_name)
 
             for nutrient, factor in adjustments.items():
+                if nutrient not in ADJUSTABLE_NUTRIENTS:
+                    # Skip calories/fat/carbs/protein to preserve
+                    # macro-percentage balance.
+                    continue
                 if nutrient in new_nutrition:
                     original_value = new_nutrition[nutrient]
+                    if original_value == 0 and factor < 1.0:
+                        # If original value is 0, multiplying by factor gives 0.
+                        # Skip — there's nothing to reduce.
+                        continue
                     # Only adjust the portion attributable to this ingredient
                     ingredient_contribution = original_value * ingredient_share
                     adjusted_contribution = ingredient_contribution * factor
@@ -615,6 +634,12 @@ class SwapEngine:
                         original_value - ingredient_contribution + adjusted_contribution
                     )
 
+        logger.info(
+            f"Nutrition after swaps: calories={new_nutrition.get('calories', 0):.1f}, "
+            f"sugar={new_nutrition.get('sugar', 0):.1f}, "
+            f"sat_fat={new_nutrition.get('saturated_fat', 0):.1f}, "
+            f"sodium={new_nutrition.get('sodium', 0):.1f}"
+        )
         logger.debug("Nutrition estimation complete")
 
         return new_nutrition
@@ -633,31 +658,146 @@ class SwapEngine:
         """
         normalized = normalize_ingredient_name(substitute_name)
         
-        # Predefined adjustment factors
-        # These are rough estimates for common substitutions
+        # Predefined adjustment factors for common swap substitutes.
+        # Each factor is a multiplier on the ingredient's share of the
+        # nutrient (1.0 = no change, <1.0 = reduction, >1.0 = increase).
         adjustment_map = {
+            # ----- Oils / fats -----
             "olive oil": {
-                "saturated_fat": 0.7,  # 30% less saturated fat
-                "trans_fat": 0.0,      # No trans fat
+                "saturated_fat": 0.55, "trans_fat": 0.0, "cholesterol": 0.5,
             },
             "avocado oil": {
-                "saturated_fat": 0.6,
-                "trans_fat": 0.0,
+                "saturated_fat": 0.5, "trans_fat": 0.0, "cholesterol": 0.4,
+            },
+            "coconut oil": {
+                "saturated_fat": 1.2, "trans_fat": 0.0, "cholesterol": 0.3,
+            },
+            "ghee": {
+                "saturated_fat": 0.9, "trans_fat": 0.0,
+            },
+            "applesauce": {
+                "saturated_fat": 0.1, "sugar": 1.3, "calories": 0.5, "fat": 0.1,
+            },
+            # ----- Sweeteners -----
+            "stevia": {
+                "sugar": 0.05, "calories": 0.05,
+            },
+            "monk fruit": {
+                "sugar": 0.05, "calories": 0.05,
             },
             "honey": {
-                "sugar": 0.9,          # Slightly less sugar impact
+                "sugar": 0.85, "calories": 0.9,
             },
-            "stevia": {
-                "sugar": 0.1,          # 90% less sugar
-                "calories": 0.1,       # 90% fewer calories
+            "maple syrup": {
+                "sugar": 0.8, "calories": 0.85,
             },
+            "coconut sugar": {
+                "sugar": 0.75, "calories": 0.9,
+            },
+            "date sugar": {
+                "sugar": 0.7, "calories": 0.85, "fiber": 1.5,
+            },
+            "agave": {
+                "sugar": 0.8, "calories": 0.85,
+            },
+            # ----- Dairy alternatives -----
             "almond milk": {
-                "saturated_fat": 0.3,  # 70% less saturated fat
-                "cholesterol": 0.0,    # No cholesterol
+                "saturated_fat": 0.2, "cholesterol": 0.0, "calories": 0.4,
+            },
+            "oat milk": {
+                "saturated_fat": 0.2, "cholesterol": 0.0, "fiber": 1.5, "calories": 0.6,
+            },
+            "soy milk": {
+                "saturated_fat": 0.25, "cholesterol": 0.0, "calories": 0.55,
+            },
+            "coconut cream": {
+                "saturated_fat": 1.1, "cholesterol": 0.0,
+            },
+            "cashew cream": {
+                "saturated_fat": 0.4, "cholesterol": 0.0,
+            },
+            "greek yogurt": {
+                "saturated_fat": 0.5, "cholesterol": 0.6, "sugar": 0.5,
+            },
+            "nutritional yeast": {
+                "saturated_fat": 0.1, "cholesterol": 0.0, "sodium": 0.3,
+            },
+            # ----- Grains -----
+            "brown rice": {
+                "fiber": 2.0,
+            },
+            "quinoa": {
+                "fiber": 2.0,
+            },
+            "cauliflower rice": {
+                "calories": 0.3, "carbs": 0.2, "fiber": 1.5,
             },
             "whole wheat flour": {
-                "fiber": 1.5,          # 50% more fiber
-            }
+                "fiber": 2.0,
+            },
+            "almond flour": {
+                "carbs": 0.4, "fiber": 2.0, "fat": 1.3,
+            },
+            "oat flour": {
+                "fiber": 2.0,
+            },
+            "whole wheat pasta": {
+                "fiber": 2.0,
+            },
+            "zucchini noodles": {
+                "calories": 0.2, "carbs": 0.15, "fiber": 1.5,
+            },
+            # ----- Protein -----
+            "ground turkey": {
+                "saturated_fat": 0.5, "cholesterol": 0.7, "calories": 0.75,
+            },
+            "ground chicken": {
+                "saturated_fat": 0.4, "cholesterol": 0.6, "calories": 0.7,
+            },
+            "lentils": {
+                "saturated_fat": 0.1, "cholesterol": 0.0, "fiber": 3.0, "calories": 0.6,
+            },
+            "turkey bacon": {
+                "saturated_fat": 0.4, "sodium": 0.8, "calories": 0.6,
+            },
+            "tempeh": {
+                "saturated_fat": 0.2, "cholesterol": 0.0, "fiber": 2.5,
+            },
+            "chicken sausage": {
+                "saturated_fat": 0.5, "calories": 0.7,
+            },
+            "turkey sausage": {
+                "saturated_fat": 0.45, "calories": 0.7,
+            },
+            # ----- Condiments -----
+            "hummus": {
+                "saturated_fat": 0.3, "fiber": 2.0, "cholesterol": 0.0,
+            },
+            "avocado": {
+                "saturated_fat": 0.3, "fiber": 2.5, "cholesterol": 0.0,
+            },
+            "coconut aminos": {
+                "sodium": 0.4,
+            },
+            "tamari": {
+                "sodium": 0.7,
+            },
+            "salsa": {
+                "sugar": 0.3, "sodium": 0.6, "calories": 0.3,
+            },
+            # ----- Spices/salt -----
+            "herbs": {
+                "sodium": 0.0,
+            },
+            "lemon juice": {
+                "sodium": 0.0,
+            },
+            "garlic powder": {
+                "sodium": 0.05,
+            },
+            "herb blend": {
+                "sodium": 0.05,
+            },
         }
         
         # Find matching adjustments
@@ -665,11 +805,12 @@ class SwapEngine:
             if ingredient_pattern in normalized:
                 return adjustments
         
-        # Default: minimal improvement
+        # Default: modest improvement across negative factors
         return {
-            "saturated_fat": 0.9,
-            "sodium": 0.9,
-            "sugar": 0.9
+            "saturated_fat": 0.85,
+            "sodium": 0.85,
+            "sugar": 0.85,
+            "cholesterol": 0.85,
         }
     
     def reconstruct_swaps(

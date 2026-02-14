@@ -73,6 +73,8 @@ class Allergen:
         """
         return {
             "name": self.name,
+            "allergen_category": self.name,
+            "category": self.name,
             "severity": self.severity,
             "source_ingredient": self.source_ingredient,
             "matched_keyword": self.matched_keyword

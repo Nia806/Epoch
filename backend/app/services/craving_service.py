@@ -238,6 +238,7 @@ class CravingService:
                         results.append(r)
             except Exception as e:
                 logger.warning(f"Category search '{cat}' failed: {e}")
+                logger.warning(f"[COSYLAB API FALLBACK] RecipeDB category search '{cat}' failed in craving replacement. Skipping this category.")
 
         # By day category (time awareness)
         for day_cat in TIME_TO_DAY_CATEGORY.get(req.time_of_day.value, []):
@@ -249,6 +250,7 @@ class CravingService:
                         results.append(r)
             except Exception as e:
                 logger.warning(f"Day-category search '{day_cat}' failed: {e}")
+                logger.warning(f"[COSYLAB API FALLBACK] RecipeDB day-category search '{day_cat}' failed in craving replacement. Skipping this time filter.")
 
         # By cuisine (for spicy/umami flavors)
         for cuisine in search_params.get("cuisines", []):
@@ -260,6 +262,7 @@ class CravingService:
                         results.append(r)
             except Exception as e:
                 logger.warning(f"Cuisine search '{cuisine}' failed: {e}")
+                logger.warning(f"[COSYLAB API FALLBACK] RecipeDB cuisine search '{cuisine}' failed in craving replacement. Skipping this cuisine.")
 
         # By diet type
         if req.diet_type:
@@ -271,6 +274,7 @@ class CravingService:
                         results.append(r)
             except Exception as e:
                 logger.warning(f"Diet search '{req.diet_type}' failed: {e}")
+                logger.warning(f"[COSYLAB API FALLBACK] RecipeDB diet search '{req.diet_type}' failed in craving replacement. Skipping diet filter.")
 
         # By calorie cap
         max_cal = search_params.get("max_calories")
@@ -283,6 +287,7 @@ class CravingService:
                         results.append(r)
             except Exception as e:
                 logger.warning(f"Calorie search failed: {e}")
+                logger.warning("[COSYLAB API FALLBACK] RecipeDB calorie-range search failed in craving replacement. Skipping calorie filter.")
 
         logger.info(f"Fetched {len(results)} candidate recipes from RecipeDB")
         return results
@@ -418,7 +423,7 @@ class CravingService:
                             )
                         )
             except Exception as e:
-                logger.debug(f"FlavorDB pairing for '{seed}' failed: {e}")
+                logger.warning(f"[COSYLAB API FALLBACK] FlavorDB pairing for '{seed}' failed in craving quick-combos: {e}. Using seed ingredients directly.")
 
         # Ensure we always return at least one combo using seed ingredients directly
         if len(combos) < 2 and len(seeds) >= 2:
@@ -451,6 +456,7 @@ class CravingService:
                     return insight
             except Exception as e:
                 logger.warning(f"LLM craving insight failed, using template: {e}")
+                logger.warning("[LLM FALLBACK] Gemini LLM craving insight generation failed. Falling back to template-based insight.")
 
         # Template fallback
         flavor_templates = CRAVING_INSIGHT_TEMPLATES.get(req.flavor_type.value, {})
