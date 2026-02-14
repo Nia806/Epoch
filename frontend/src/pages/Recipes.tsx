@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { NavLink } from "@/components/NavLink";
 import { Search, Plus, ChefHat } from "lucide-react";
-import { getRecipes } from "@/store/recipeStore";
+import { getRecipes, subscribeToRecipeStore } from "@/store/recipeStore";
 import type { Recipe } from "@/types/api";
 
 export default function Recipes() {
@@ -17,7 +17,12 @@ export default function Recipes() {
     setRecipes(getRecipes());
   }, []);
 
-  // Re-fetch when returning to this tab (e.g. after saving a new recipe)
+  // Re-fetch when recipes change (save/remove) or when returning to this tab
+  useEffect(() => {
+    const unsubscribe = subscribeToRecipeStore(() => setRecipes(getRecipes()));
+    return unsubscribe;
+  }, []);
+
   useEffect(() => {
     const onFocus = () => setRecipes(getRecipes());
     window.addEventListener("focus", onFocus);

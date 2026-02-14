@@ -21,12 +21,23 @@ function loadRecipes(): Recipe[] {
   }
 }
 
+const RECIPE_STORE_EVENT = "recipe-store-updated";
+
 function saveRecipes(recipes: Recipe[]): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(RECIPE_STORE_EVENT));
+    }
   } catch (e) {
     console.error("Failed to save recipes to localStorage", e);
   }
+}
+
+export function subscribeToRecipeStore(callback: () => void): () => void {
+  const handler = () => callback();
+  window.addEventListener(RECIPE_STORE_EVENT, handler);
+  return () => window.removeEventListener(RECIPE_STORE_EVENT, handler);
 }
 
 /**

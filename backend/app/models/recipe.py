@@ -7,7 +7,7 @@ Pydantic for automatic validation, serialization, and type safety.
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 
 
 class RecipeAnalysisRequest(BaseModel):
@@ -380,7 +380,7 @@ class QuickMealResponse(BaseModel):
     """
     meals: List[QuickMealRecipe] = Field(..., description="List of quick meal recipes")
     total_found: int = Field(..., ge=0, description="Total number of meals found")
-    filters_applied: Dict[str, any] = Field(..., description="Summary of applied filters")
+    filters_applied: Dict[str, Any] = Field(..., description="Summary of applied filters")
     psychological_tip: str = Field(
         default="Quick healthy meals help stabilize blood sugar and reduce extreme hunger, making it easier to avoid cravings for junk food.",
         description="Psychological insight about healthy eating"

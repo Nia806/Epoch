@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { NavLink } from "@/components/NavLink";
 import { TrendingUp, ChefHat, Users, Activity, AlertCircle } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useLocation } from "react-router-dom";
 import { recipeApi, ApiError } from "@/services/api";
-import { getRecipes } from "@/store/recipeStore";
+import { getRecipes, subscribeToRecipeStore } from "@/store/recipeStore";
 
 function computeRecipeStats() {
   const recipes = getRecipes();
@@ -29,38 +30,58 @@ function computeRecipeStats() {
 
 export default function Dashboard() {
   const [recipeStats, setRecipeStats] = useState(computeRecipeStats);
-  const [profileCount, setProfileCount] = useState<number>(0);
-  const [isLoading, setIsLoading] = useState(true);
+  const [profileCount, setProfileCount] = useState<number | null>(null);
+  const [profilesLoading, setProfilesLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const refreshStats = () => {
     setRecipeStats(computeRecipeStats());
+    setProfilesLoading(true);
     recipeApi
       .getProfiles()
       .then((profiles) => setProfileCount(profiles.length))
-      .catch(() => setProfileCount(0));
+      .catch(() => setProfileCount(0))
+      .finally(() => setProfilesLoading(false));
   };
 
+  const location = useLocation();
+
+  // Refresh recipe stats when navigating to Dashboard
   useEffect(() => {
-    const load = async () => {
+    if (location.pathname === "/dashboard") {
+      setRecipeStats(computeRecipeStats());
+    }
+  }, [location.pathname, location.key]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToRecipeStore(() => setRecipeStats(computeRecipeStats()));
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadProfiles = async () => {
       try {
-        setIsLoading(true);
         setError(null);
-        setRecipeStats(computeRecipeStats());
-        const profiles = await recipeApi.getProfiles();
-        setProfileCount(profiles.length);
+        const profilesPromise = recipeApi.getProfiles();
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Request timed out")), 8000)
+        );
+        const profiles = await Promise.race([profilesPromise, timeoutPromise]);
+        if (!cancelled) setProfileCount(profiles.length);
       } catch (err) {
-        if (err instanceof ApiError) {
-          setError(err.message);
-        } else {
-          setError("Failed to load dashboard stats");
+        if (!cancelled) {
+          setError(err instanceof ApiError ? err.message : "Could not load profiles");
+          setProfileCount(0);
         }
-        setProfileCount(0);
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setProfilesLoading(false);
       }
     };
-    load();
+    loadProfiles();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Refresh when returning to this page (e.g. after saving a recipe or creating a profile)
@@ -85,7 +106,7 @@ export default function Dashboard() {
     },
     {
       title: "Active Profiles",
-      value: profileCount.toString(),
+      value: profilesLoading ? "…" : (profileCount ?? 0).toString(),
       icon: Users,
       trend: "User profiles created",
     },
@@ -124,12 +145,7 @@ export default function Dashboard() {
 
         {/* Stats Grid */}
         <div className="grid gap-6 md:grid-cols-3 mb-8">
-          {isLoading ? (
-            <div className="col-span-full text-center text-muted-foreground py-8">
-              Loading dashboard stats...
-            </div>
-          ) : (
-            displayStats.map((stat, index) => (
+          {displayStats.map((stat, index) => (
               <motion.div
                 key={stat.title}
                 initial={{ opacity: 0, y: 20 }}
@@ -151,8 +167,7 @@ export default function Dashboard() {
                   </CardContent>
                 </Card>
               </motion.div>
-            ))
-          )}
+            ))}
         </div>
 
         {/* Quick Actions */}
